@@ -40,4 +40,6 @@ macOS 剪贴板历史工具，功能对标 PasteNow。原生 Swift / SwiftUI 实
 .build/debug/PasteBox --render out.png [关键词]  # 离屏渲染面板，不需要屏幕录制权限
 .build/debug/PasteBox --write-test <条目 id>    # 把一条历史写回系统剪贴板
 .build/release/PasteBox --scroll-bench [步数] [每步像素]  # 用真实历史测滚动耗时和内容高度变化
+# 运行中的 PasteBox 收到这个通知时，执行和按快捷键一样的操作（用来逐帧跟踪窗口，不需要模拟按键的权限）
+osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately("com.liuhaofeng.pastebox.debug.hotkey", $(), $(), true)'
 ```

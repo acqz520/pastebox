@@ -133,7 +133,7 @@ struct PanelView: View {
             .onChange(of: state.selection) { sel in
                 if state.rows.indices.contains(sel) { proxy.scrollTo(state.rows[sel].id) }
             }
-            .onChange(of: state.focusToken) { _ in
+            .onChange(of: state.scrollTopToken) { _ in
                 if let first = state.rows.first { proxy.scrollTo(first.id, anchor: .top) }
             }
         }

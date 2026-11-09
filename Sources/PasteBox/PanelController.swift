@@ -11,7 +11,7 @@ final class KeyPanel: NSPanel {
 
 final class PanelController: NSObject, NSWindowDelegate {
     private let panel: KeyPanel
-    private let state: AppState
+    let state: AppState
     private var keyMonitor: Any?
 
     var isVisible: Bool { panel.isVisible }
@@ -34,6 +34,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         panel.minSize = NSSize(width: 300, height: 360)
+        panel.animationBehavior = .none
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: PanelView(state: state))
     }
@@ -52,6 +53,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     func show(below anchor: NSRect? = nil) {
         state.prepareForShow()
         position(below: anchor)
+        // Lay out before the window appears, so the first visible frame is already final.
+        panel.contentView?.layoutSubtreeIfNeeded()
         panel.makeKeyAndOrderFront(nil)
         panel.invalidateShadow()
         installKeyMonitor()
@@ -64,6 +67,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.orderOut(nil)
         removeKeyMonitor()
         lastHide = Date()
+        // Reset while hidden (clear search, back to the top) so the next show doesn't
+        // briefly display the previous state and then jump.
+        state.resetForNextShow()
     }
 
     func windowDidResignKey(_ notification: Notification) {

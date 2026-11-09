@@ -3,8 +3,11 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var store: Store!
-    private var state: AppState!
-    private var panel: PanelController!
+    /// The hotkey panel opens at the mouse; the status bar panel opens under the menu bar icon.
+    /// They are separate windows with separate state, so one never shows up looking like the other.
+    private var hotkeyPanel: PanelController!
+    private var statusPanel: PanelController!
+    private var panels: [PanelController] { [hotkeyPanel, statusPanel].compactMap { $0 } }
     private let monitor = ClipboardMonitor()
     private let ingestQueue = DispatchQueue(label: "pastebox.ingest", qos: .userInitiated)
     private var statusItem: NSStatusItem!
@@ -31,44 +34,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        state = AppState(store: store)
-        state.onPaste = { [weak self] row, plain in self?.paste(row, plain: plain) }
-        state.onCopy = { [weak self] row in self?.copy(row) }
-        state.onOpenSettings = { [weak self] in self?.openSettings() }
-        panel = PanelController(state: state)
+        hotkeyPanel = makePanel()
+        statusPanel = makePanel()
 
         monitor.onCapture = { [weak self] items, bundle in self?.capture(items, bundle: bundle) }
         monitor.start()
 
         setupSettings()
         setupStatusItem()
-        HotKey.shared.action = { [weak self] in self?.panel.toggle() }
+        HotKey.shared.action = { [weak self] in self?.hotkeyPanel.toggle() }
+        // Lets scripts trigger exactly what the hotkey does (window tracing without keystroke access).
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.liuhaofeng.pastebox.debug.hotkey"), object: nil, queue: .main
+        ) { _ in HotKey.shared.action?() }
         settings.hotKeyOK = HotKey.shared.register(Prefs.hotKey)
-        updateMenuShortcut()
 
         if !Paster.isTrusted { Paster.requestTrust() }
         if !settings.hotKeyOK { openSettings() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        panel.show()
+        hotkeyPanel.show()
         return false
+    }
+
+    private func makePanel() -> PanelController {
+        let state = AppState(store: store)
+        let panel = PanelController(state: state)
+        state.onPaste = { [weak self, weak panel] row, plain in
+            if let panel { self?.paste(row, plain: plain, from: panel) }
+        }
+        state.onCopy = { [weak self, weak panel] row in
+            if let panel { self?.copy(row, from: panel) }
+        }
+        state.onOpenSettings = { [weak self] in self?.openSettings() }
+        state.reload(resetSelection: true)
+        return panel
+    }
+
+    private func reloadAll() {
+        panels.forEach { $0.state.reload() }
     }
 
     // MARK: - Clipboard
 
     private func capture(_ items: [[Rep]], bundle: String?) {
-        ingestQueue.async { [store, state] in
+        ingestQueue.async { [weak self, store] in
             guard let store, let clip = ClipAnalyzer.analyze(items) else { return }
             store.ingest(clip, at: Date(), sourceBundle: bundle)
             store.prune(limit: max(Prefs.historyLimit, 100))
-            DispatchQueue.main.async { state?.reload() }
+            DispatchQueue.main.async { self?.reloadAll() }
         }
     }
 
-    private func write(_ row: ClipRow, plain: Bool) -> Bool {
+    private func write(_ row: ClipRow, plain: Bool, from panel: PanelController) -> Bool {
         guard let items = store.payload(row.uuid) else {
-            state.showToast("这条内容的数据已丢失")
+            panel.state.showToast("这条内容的数据已丢失")
             return false
         }
         var text: String?
@@ -80,8 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    private func paste(_ row: ClipRow, plain: Bool) {
-        guard write(row, plain: plain) else { return }
+    private func paste(_ row: ClipRow, plain: Bool, from panel: PanelController) {
+        guard write(row, plain: plain, from: panel) else { return }
+        let state = panel.state
         guard Prefs.autoPaste else {
             panel.hide()
             return
@@ -91,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             state.trusted = false
             state.reload()
             state.showToast("已复制，请手动 ⌘V（授权辅助功能后可自动粘贴）")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.panel.hide() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak panel] in panel?.hide() }
             return
         }
         panel.hide()
@@ -99,10 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { Paster.pressCmdV() }
     }
 
-    private func copy(_ row: ClipRow) {
-        guard write(row, plain: false) else { return }
-        state.reload()
-        state.showToast("已复制到剪贴板")
+    private func copy(_ row: ClipRow, from panel: PanelController) {
+        guard write(row, plain: false, from: panel) else { return }
+        reloadAll()
+        panel.state.showToast("已复制到剪贴板")
     }
 
     // MARK: - Status bar
@@ -132,16 +154,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func statusItemClicked() {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            panel.hide()
+            statusPanel.hide()
             // Attach the menu only for this click, otherwise every click would open it.
             statusItem.menu = statusMenu
             statusItem.button?.performClick(nil)
             return
         }
-        if panel.isVisible {
-            panel.hide()
-        } else if !panel.hidJustNow {
-            panel.show(below: statusItem.button?.window?.frame)
+        if statusPanel.isVisible {
+            statusPanel.hide()
+        } else if !statusPanel.hidJustNow {
+            statusPanel.show(below: statusItem.button?.window?.frame)
         }
     }
 
@@ -153,12 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = nil
     }
 
-    private func updateMenuShortcut() {
-        openItem?.title = "打开剪贴板历史    \(Prefs.hotKey.display)"
-    }
-
     @objc private func openPanel() {
-        DispatchQueue.main.async { self.panel.show(below: self.statusItem.button?.window?.frame) }
+        DispatchQueue.main.async { self.statusPanel.show(below: self.statusItem.button?.window?.frame) }
     }
 
     @objc private func togglePause() {
@@ -181,7 +199,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let ok = HotKey.shared.register(shortcut)
             if !ok { HotKey.shared.register(Prefs.hotKey) }
-            if ok { DispatchQueue.main.async { self?.updateMenuShortcut() } }
             return ok
         }
         settings.onPrune = { [weak self] in
@@ -192,14 +209,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.onClear = { [weak self] in
             guard let self else { return }
             self.store.clearHistory()
-            self.state.reload()
+            self.reloadAll()
             self.settings.itemCount = self.store.count()
         }
         settings.onImport = { [weak self] in self?.importPasteNow() }
     }
 
     private func openSettings() {
-        panel.hide()
+        panels.forEach { $0.hide() }
         settings.refresh()
         if settingsWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: settings)))
@@ -234,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 self.store.prune(limit: max(Prefs.historyLimit, 100))
                 self.settings.itemCount = self.store.count()
-                self.state.reload()
+                self.reloadAll()
             }
         }
     }

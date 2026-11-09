@@ -20,6 +20,8 @@ final class AppState: ObservableObject {
     @Published var addingCategory = false
     /// Bumped whenever the search field should take focus again.
     @Published var focusToken = 0
+    /// Bumped to scroll the list back to the top.
+    @Published var scrollTopToken = 0
 
     let store: Store
     // Load the whole history up front (metadata only) so the list's total height is known
@@ -35,15 +37,21 @@ final class AppState: ObservableObject {
         self.store = store
     }
 
-    func prepareForShow() {
+    /// Called when the panel hides: everything the next show should start from.
+    func resetForNextShow() {
         addingCategory = false
-        trusted = Paster.isTrusted
+        toast = nil
         if query.isEmpty {
-            limit = pageSize
             reload(resetSelection: true)
         } else {
             query = "" // triggers reload
         }
+        scrollTopToken += 1
+    }
+
+    /// Called right before the panel appears; only cheap checks, the content is already current.
+    func prepareForShow() {
+        trusted = Paster.isTrusted
         focusToken += 1
     }
 
